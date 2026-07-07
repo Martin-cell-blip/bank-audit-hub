@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>银行审计 · 函证与多线任务协同平台</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // 语义化设计令牌（来自 ui-ux-pro-max: Data-Dense Dashboard）
+  tailwind.config = { theme: { extend: {
+    colors: {
+      primary:'#1E40AF', primary600:'#1D4ED8', secondary:'#3B82F6', accent:'#D97706',
+      bg:'#F8FAFC', surface:'#FFFFFF', ink:'#0F172A', sub:'#64748B', line:'#E2E8F0',
+      ok:'#059669', warn:'#D97706', danger:'#DC2626'
+    },
+    fontFamily: {
+      sans:['Fira Sans','-apple-system','Segoe UI','Microsoft YaHei','PingFang SC','sans-serif'],
+      mono:['Fira Code','ui-monospace','Cascadia Code','Consolas','monospace']
+    }
+  }}}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{ --ring:#1E40AF; }
+  body{ font-family:'Fira Sans',-apple-system,'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif; }
+  .num{ font-family:'Fira Code',ui-monospace,Consolas,monospace; font-variant-numeric:tabular-nums; }
+  button:not(:disabled),a[role=button],.clickable{ cursor:pointer; }
+  *:focus-visible{ outline:2px solid var(--ring); outline-offset:2px; border-radius:6px; }
+  .card-drag{ cursor:grab; }
+  .card-drag:active{ cursor:grabbing; }
+  .col-drop.drag-over{ background:#EFF6FF; box-shadow:inset 0 0 0 2px #1E40AF; border-radius:12px; }
+  .icon{ width:1em; height:1em; display:inline-block; vertical-align:-0.125em; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  ::-webkit-scrollbar{ height:8px; width:8px } ::-webkit-scrollbar-thumb{ background:#cbd5e1; border-radius:8px }
+  @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
+</style>
+</head>
+<body class="bg-bg text-ink">
+
+<!-- Header -->
+<header class="bg-surface border-b border-line sticky top-0 z-20">
+  <div class="max-w-7xl mx-auto px-5 py-3 flex items-center gap-4">
+    <div class="w-9 h-9 rounded-lg bg-primary text-white grid place-items-center font-bold text-lg select-none">审</div>
+    <div class="flex-1 min-w-0">
+      <h1 class="text-lg font-bold text-ink leading-tight">银行审计 · 函证与多线任务协同平台</h1>
+      <p class="text-xs text-sub truncate" id="periodLabel">年度财务报表审计 · 加载中…</p>
+    </div>
+    <button onclick="resetDemo()" class="text-xs px-3 py-1.5 rounded-md border border-line hover:bg-muted hover:border-slate-300 text-sub transition-colors inline-flex items-center gap-1.5">
+      <svg viewBox="0 0 24 24" class="icon"><path d="M3 2v6h6"/><path d="M21 12A9 9 0 1 1 6 5.3L3 8"/></svg>重置演示数据
+    </button>
+  </div>
+  <nav class="max-w-7xl mx-auto px-5 flex gap-6 text-sm" aria-label="主导航">
+    <button class="tabbtn active py-2.5 border-b-2 border-transparent font-medium transition-colors" data-tab="overview" onclick="showTab('overview')">总览</button>
+    <button class="tabbtn py-2.5 border-b-2 border-transparent font-medium text-sub transition-colors" data-tab="kanban" onclick="showTab('kanban')">函证看板</button>
+    <button class="tabbtn py-2.5 border-b-2 border-transparent font-medium text-sub transition-colors" data-tab="engagements" onclick="showTab('engagements')">多线任务</button>
+    <button class="tabbtn py-2.5 border-b-2 border-transparent font-medium text-sub transition-colors" data-tab="ledger" onclick="showTab('ledger')">台账与生成</button>
+  </nav>
+</header>
+
+<main class="max-w-7xl mx-auto px-5 py-6">
+
+  <!-- ============ 总览 ============ -->
+  <section id="tab-overview">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" id="kpis"></div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="bg-surface rounded-xl border border-line p-5 lg:col-span-2">
+        <h2 class="font-semibold text-ink mb-4 text-sm">函证状态分布</h2>
+        <div id="statusBar" class="flex rounded-lg overflow-hidden h-8 text-[11px] font-medium ring-1 ring-line" role="img" aria-label="函证状态分布条"></div>
+        <div id="statusLegend" class="flex flex-wrap gap-x-5 gap-y-1 mt-3 text-xs text-sub"></div>
+        <h2 class="font-semibold text-ink mt-7 mb-3 text-sm">函证覆盖率（金额口径 · 银行存款须 100%）</h2>
+        <div id="coverage" class="space-y-2"></div>
+        <h2 class="font-semibold text-ink mt-7 mb-3 text-sm">往来款账龄分布（应收/应付/其他应收 · 按金额）</h2>
+        <div id="aging" class="space-y-2"></div>
+      </div>
+      <div class="space-y-4">
+        <div class="bg-surface rounded-xl border border-line p-5">
+          <h2 class="font-semibold text-ink mb-3 text-sm">各被审计单位函证进度</h2>
+          <div id="entityProgress" class="space-y-3"></div>
+        </div>
+        <div class="bg-surface rounded-xl border border-line p-5">
+          <h2 class="font-semibold text-ink mb-3 text-sm">审计留痕（近期）</h2>
+          <div id="events" class="space-y-2 text-xs text-sub max-h-52 overflow-auto"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 函证看板 ============ -->
+  <section id="tab-kanban" class="hidden">
+    <p class="text-xs text-sub mb-3">拖动卡片切换状态，或用卡片按钮走「发函 → 录入回函 → 核销」正规流程；回函金额自动与账面比对生成差异。</p>
+    <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3" id="board"></div>
+  </section>
+
+  <!-- ============ 多线任务 ============ -->
+  <section id="tab-engagements" class="hidden">
+    <p class="text-xs text-sub mb-3">同时跟踪多个被审计单位 × 科目的现场进度（计划 → 现场 → 复核 → 报告），自动标记逾期与函证完成度。</p>
+    <div class="bg-surface rounded-xl border border-line overflow-x-auto">
+      <table class="w-full text-sm min-w-[820px]">
+        <thead class="bg-muted text-sub text-xs sticky top-0">
+          <tr>
+            <th class="text-left px-4 py-2.5 font-medium">被审计单位</th>
+            <th class="text-left px-4 py-2.5 font-medium">科目</th>
+            <th class="text-left px-4 py-2.5 font-medium">负责人</th>
+            <th class="text-left px-4 py-2.5 font-medium">阶段</th>
+            <th class="text-left px-4 py-2.5 font-medium">计划完成</th>
+            <th class="text-left px-4 py-2.5 font-medium">状态</th>
+            <th class="text-left px-4 py-2.5 font-medium w-52">函证进度</th>
+          </tr>
+        </thead>
+        <tbody id="engRows" class="divide-y divide-line"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 台账与生成 ============ -->
+  <section id="tab-ledger" class="hidden">
+    <div class="flex flex-wrap items-center gap-3 mb-3">
+      <button onclick="generateConfs()" class="text-sm px-4 py-2 rounded-lg bg-primary text-white hover:bg-primary600 font-medium transition-colors inline-flex items-center gap-2">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>批量生成询证函
+      </button>
+      <span class="text-xs text-sub">为尚未生成函证的台账行一键生成「待发函」卡片</span>
+      <div class="flex-1"></div>
+      <label class="text-xs text-sub" for="impEng">导入台账到项目：</label>
+      <select id="impEng" class="text-sm border border-line rounded-md px-2 py-1.5 bg-surface"></select>
+      <input type="file" id="impFile" accept=".xlsx" class="text-xs" aria-label="选择 Excel 台账文件">
+      <button onclick="importLedger()" class="text-sm px-3 py-2 rounded-lg border border-line hover:bg-muted transition-colors inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>导入
+      </button>
+    </div>
+    <div class="bg-surface rounded-xl border border-line overflow-x-auto">
+      <table class="w-full text-sm min-w-[860px]">
+        <thead class="bg-muted text-sub text-xs sticky top-0">
+          <tr>
+            <th class="text-left px-4 py-2.5 font-medium">被审计单位</th>
+            <th class="text-left px-4 py-2.5 font-medium">往来单位 / 开户行</th>
+            <th class="text-left px-4 py-2.5 font-medium">科目</th>
+            <th class="text-right px-4 py-2.5 font-medium">账面余额(元)</th>
+            <th class="text-left px-4 py-2.5 font-medium">入账日</th>
+            <th class="text-right px-4 py-2.5 font-medium">账龄(天)</th>
+            <th class="text-center px-4 py-2.5 font-medium">函证</th>
+          </tr>
+        </thead>
+        <tbody id="ledRows" class="divide-y divide-line"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- 录入回函 Modal -->
+<div id="replyModal" class="hidden fixed inset-0 z-40 grid place-items-center" role="dialog" aria-modal="true" aria-labelledby="replyTitle">
+  <div class="absolute inset-0 bg-black/50" onclick="closeReply()"></div>
+  <div class="relative bg-surface rounded-xl border border-line shadow-xl w-[92%] max-w-sm p-5">
+    <h3 id="replyTitle" class="font-semibold text-ink mb-1">录入回函金额</h3>
+    <p class="text-xs text-sub mb-4" id="replySub"></p>
+    <label class="text-xs font-medium text-ink" for="replyInput">回函金额（元）</label>
+    <input id="replyInput" type="number" step="0.01" inputmode="decimal"
+           class="w-full mt-1 border border-line rounded-lg px-3 py-2 num text-sm focus:ring-2 focus:ring-primary focus:border-primary outline-none"
+           onkeydown="if(event.key==='Enter')submitReply()">
+    <p class="text-xs text-sub mt-1.5" id="replyHint">与账面一致→相符；不一致→自动进入「差异待跟进」。</p>
+    <div class="flex justify-end gap-2 mt-4">
+      <button onclick="closeReply()" class="text-sm px-3 py-1.5 rounded-lg border border-line hover:bg-muted transition-colors">取消</button>
+      <button onclick="submitReply()" class="text-sm px-4 py-1.5 rounded-lg bg-primary text-white hover:bg-primary600 transition-colors">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const money = n => (n==null?'—':Number(n).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2}));
+const $ = s => document.querySelector(s);
+async function get(u){const r=await fetch(u);return r.json();}
+async function post(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):null});
+  if(!r.ok){const e=await r.json().catch(()=>({detail:'出错'}));throw new Error(e.detail||'出错');}return r.json();}
+
+const STATUS = ['待发函','已发出','已回函','差异待跟进','已核销'];
+// 语义状态色（green/amber/red + blue，符合 data-dense dashboard 规范；均配文字，不靠颜色单独表意）
+const SC = {
+  '待发函':'#64748B', '已发出':'#2563EB', '已回函':'#059669', '差异待跟进':'#D97706', '已核销':'#1E40AF'
+};
+const AREA = {'银行存款':'#1E40AF','应收账款':'#059669','应付账款':'#D97706','短期借款':'#7C3AED','其他应收款':'#0891B2'};
+const chip = (hex,text)=>`<span class="text-[10px] px-1.5 py-0.5 rounded font-medium" style="background:${hex}1a;color:${hex}">${text}</span>`;
+
+// 内联 SVG 图标（Lucide 风格，替代 emoji）
+const I = {
+  send:'<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  undo:'<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
+  printer:'<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8" rx="1"/>',
+  file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  alert:'<path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  arrow:'<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+};
+const svg = (p,cls='icon')=>`<svg viewBox="0 0 24 24" class="${cls}">${p}</svg>`;
+
+function showTab(t){
+  ['overview','kanban','engagements','ledger'].forEach(x=>$('#tab-'+x).classList.toggle('hidden', x!==t));
+  document.querySelectorAll('.tabbtn').forEach(b=>{
+    const on=b.dataset.tab===t;
+    b.classList.toggle('active',on);
+    b.classList.toggle('text-primary',on); b.classList.toggle('border-primary',on);
+    b.classList.toggle('text-sub',!on); b.classList.toggle('border-transparent',!on);
+  });
+  ({overview:loadOverview,kanban:loadBoard,engagements:loadEngagements,ledger:loadLedger})[t]();
+}
+
+/* ---------- 总览 ---------- */
+async function loadOverview(){
+  const d = await get('/api/overview');
+  $('#periodLabel').textContent = `${d.fy} 年度财务报表审计 · 资产负债表日 ${d.as_of} · 今天 ${d.today}`;
+  const kpi=(label,val,sub,accent)=>`<div class="bg-surface rounded-xl border border-line p-4 hover:shadow-md transition-shadow border-l-4" style="border-left-color:${accent||'#1E40AF'}">
+    <div class="text-xs text-sub">${label}</div>
+    <div class="text-2xl font-bold text-ink mt-1 num">${val}</div>
+    <div class="text-xs text-sub mt-0.5">${sub||''}</div></div>`;
+  $('#kpis').innerHTML =
+    kpi('函证总数', d.total, `账面合计 ¥${money(d.book_total)}`, '#1E40AF') +
+    kpi('已回函率', d.reply_rate+'%', `${d.replied}/${d.total} 已回`, '#059669') +
+    kpi('差异待跟进', d.diff_cnt, `差异合计 ¥${money(d.diff_amt)}`, d.diff_cnt?'#D97706':'#64748B') +
+    kpi('逾期项目', d.overdue, '现场/复核超计划', d.overdue?'#DC2626':'#64748B');
+
+  const total=d.total||1;
+  $('#statusBar').innerHTML = STATUS.map(s=>{
+    const n=d.status_counts[s]||0; return n?`<div class="grid place-items-center text-white" style="width:${n/total*100}%;background:${SC[s]}" title="${s}: ${n}">${n}</div>`:'';
+  }).join('');
+  $('#statusLegend').innerHTML = STATUS.map(s=>
+    `<span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm" style="background:${SC[s]}"></span>${s} <b class="num">${d.status_counts[s]||0}</b></span>`).join('');
+
+  // 函证覆盖率
+  $('#coverage').innerHTML = (d.coverage||[]).map(c=>{
+    const bar = c.rate>=100?'#059669':(c.alert?'#DC2626':'#1E40AF');
+    return `<div class="flex items-center gap-3 text-xs">
+      <div class="w-20 shrink-0 ${c.alert?'text-danger font-semibold':'text-sub'}">${c.account}</div>
+      <div class="flex-1 bg-muted rounded h-5 overflow-hidden relative"><div class="h-full rounded" style="width:${Math.min(c.rate,100)}%;background:${bar}"></div></div>
+      <div class="w-16 text-right num ${c.alert?'text-danger font-semibold':'text-ink'}">${c.rate}%</div>
+      <div class="w-6 text-right">${c.alert?svg(I.alert,'icon text-danger'):''}</div>
+    </div>`;
+  }).join('');
+
+  const maxAmt=Math.max(...d.aging.map(a=>a.amt),1);
+  $('#aging').innerHTML = d.aging.map(a=>{
+    const long = a.bucket==='1年以上';
+    return `<div class="flex items-center gap-3 text-xs">
+      <div class="w-20 text-sub shrink-0">${a.bucket}</div>
+      <div class="flex-1 bg-muted rounded h-5 overflow-hidden"><div class="h-full rounded" style="width:${a.amt/maxAmt*100}%;background:${long?'#D97706':'#1E40AF'}"></div></div>
+      <div class="w-32 text-right text-ink num">¥${money(a.amt)}</div>
+      <div class="w-10 text-right text-sub num">${a.cnt}笔</div>
+    </div>`;
+  }).join('') || emptyState('无往来款台账');
+
+  $('#entityProgress').innerHTML = d.entity_progress.map(e=>{
+    const p=e.total?Math.round(e.replied/e.total*100):0;
+    return `<div><div class="flex justify-between text-xs mb-1"><span class="text-ink truncate pr-2">${e.entity}</span><span class="text-sub num">${e.replied}/${e.total}</span></div>
+      <div class="bg-muted rounded h-2"><div class="bg-ok h-2 rounded transition-all" style="width:${p}%"></div></div></div>`;
+  }).join('') || emptyState('暂无项目');
+
+  const ev = await get('/api/events?limit=12');
+  $('#events').innerHTML = ev.map(e=>`<div class="flex gap-2 border-b border-line/60 pb-1.5">
+    <span class="text-primary font-medium shrink-0">${e.action}</span>
+    <span class="truncate text-ink/80">${e.detail||''}</span>
+    <span class="ml-auto text-sub/70 shrink-0 num">${(e.ts||'').slice(5,16).replace('T',' ')}</span></div>`).join('') || emptyState('暂无留痕');
+}
+const emptyState = msg => `<div class="text-center py-6 text-sub text-xs">${svg(I.file,'icon text-2xl block mx-auto mb-1 opacity-40')}${msg}</div>`;
+
+/* ---------- 看板 ---------- */
+async function loadBoard(){
+  const list = await get('/api/confirmations');
+  const byStatus = Object.fromEntries(STATUS.map(s=>[s,[]]));
+  list.forEach(c=>(byStatus[c.status]||byStatus['待发函']).push(c));
+  $('#board').innerHTML = STATUS.map(s=>`
+    <div class="bg-muted/60 rounded-xl border border-line flex flex-col min-h-[120px]">
+      <div class="px-3 py-2 flex items-center justify-between border-b border-line">
+        <span class="text-sm font-semibold text-ink"><span class="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style="background:${SC[s]}"></span>${s}</span>
+        <span class="text-xs bg-surface border border-line rounded-full px-2 text-sub num">${byStatus[s].length}</span>
+      </div>
+      <div class="col-drop flex-1 p-2 space-y-2" data-status="${s}"
+           ondragover="event.preventDefault();this.classList.add('drag-over')"
+           ondragleave="this.classList.remove('drag-over')"
+           ondrop="onDrop(event,'${s}')">
+        ${byStatus[s].map(cardHTML).join('') || `<div class="text-center text-[11px] text-sub/70 py-4">无</div>`}
+      </div>
+    </div>`).join('');
+}
+const REASONS=['未达账项','记账错误','舞弊迹象','待核实'];
+function cardHTML(c){
+  const diff = c.difference!=null && Number(c.difference)!==0;
+  // 未回函催办（已发出超期）
+  const followup = c.needs_followup ? `<div class="mt-1.5 text-[11px] px-1.5 py-1 rounded bg-warn/10 text-warn flex items-start gap-1">
+      ${svg(I.clock,'icon shrink-0 mt-0.5')}<span>发函 ${c.days_since_sent} 天未回，应催函${c.no_alt_procedure?'（银行存款不可用替代程序）':'，逾期可转替代程序'}</span></div>` : '';
+  // 差异归因（三分法）
+  const reasonUI = c.status==='差异待跟进' ? `<div class="mt-1.5 flex items-center gap-1 text-[11px]">
+      <span class="text-sub shrink-0">归因</span>
+      <select onchange="setReason(${c.id},this.value)" class="text-[11px] border border-line rounded px-1 py-0.5 bg-surface flex-1">
+        <option value="">选择…</option>${REASONS.map(r=>`<option ${c.diff_reason===r?'selected':''}>${r}</option>`).join('')}
+      </select></div>` : (c.diff_reason?`<div class="mt-1 text-[11px] text-sub">归因：${chip('#7C3AED',c.diff_reason)}</div>`:'');
+  return `<div class="card-drag bg-surface rounded-lg border ${diff?'border-warn/40':'border-line'} p-2.5 shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+      draggable="true" ondragstart="event.dataTransfer.setData('id','${c.id}')">
+    <div class="flex items-center justify-between mb-1">
+      <span class="text-[11px] num text-sub">${c.confirm_no}</span>
+      ${chip(AREA[c.account]||'#64748B', c.account)}
+    </div>
+    <div class="text-sm font-medium text-ink leading-snug">${c.counterparty}</div>
+    <div class="text-[11px] text-sub mb-1.5">${c.entity} · ${c.method}</div>
+    <div class="text-xs text-ink/80">账面 <b class="num">¥${money(c.book_amount)}</b></div>
+    ${c.reply_amount!=null?`<div class="text-xs mt-0.5 text-ink/80">回函 <span class="num">¥${money(c.reply_amount)}</span> · 差异 <b class="num ${diff?'text-danger':'text-ok'}">¥${money(c.difference)}</b>${diff?' '+svg(I.alert,'icon text-danger'):''}</div>`:''}
+    ${followup}${reasonUI}
+    <div class="flex flex-wrap items-center gap-1 mt-2 pt-2 border-t border-line/70">
+      ${btns(c)}
+      <a href="/api/confirmations/${c.id}/letter?fmt=html" target="_blank" title="预览/打印询证函" class="text-[11px] px-1.5 py-0.5 rounded bg-muted hover:bg-slate-200 text-sub transition-colors inline-flex items-center gap-1">${svg(I.printer)}函</a>
+      <a href="/api/confirmations/${c.id}/letter?fmt=docx" title="下载 Word 询证函" class="text-[11px] px-1.5 py-0.5 rounded bg-muted hover:bg-slate-200 text-sub transition-colors inline-flex items-center gap-1">${svg(I.file)}Word</a>
+    </div>
+  </div>`;
+}
+function btns(c){
+  const b=(t,ic,fn,hex)=>`<button onclick="${fn}" class="text-[11px] px-1.5 py-0.5 rounded font-medium transition-colors inline-flex items-center gap-1" style="background:${hex}1a;color:${hex}">${svg(ic)}${t}</button>`;
+  if(c.status==='待发函') return b('发函',I.send,`act(${c.id},'send')`,'#2563EB');
+  if(c.status==='已发出') return b('录入回函',I.pen,`openReply(${c.id},${c.book_amount})`,'#059669')+(c.needs_followup?b('催函',I.clock,`act(${c.id},'urge')`,'#D97706'):'');
+  if(c.status==='已回函'||c.status==='差异待跟进') return b('核销',I.check,`act(${c.id},'writeoff')`,'#1E40AF')+b('重置',I.undo,`act(${c.id},'reset')`,'#64748B');
+  return b('重置',I.undo,`act(${c.id},'reset')`,'#64748B');
+}
+async function onDrop(e,status){
+  e.preventDefault(); e.currentTarget.classList.remove('drag-over');
+  const id=e.dataTransfer.getData('id'); if(!id)return;
+  try{ await post(`/api/confirmations/${id}/status`,{status}); }
+  catch(err){ alert(err.message); }   // 非法迁移被状态机拒绝 → 提示并复位
+  loadBoard();
+}
+async function setReason(id,reason){ if(!reason)return; try{await post(`/api/confirmations/${id}/reason`,{reason});loadBoard();}catch(e){alert(e.message);} }
+async function act(id,action){ try{await post(`/api/confirmations/${id}/action`,{action});loadBoard();}catch(e){alert(e.message);} }
+
+/* 录入回函 Modal */
+let _replyId=null;
+function openReply(id,book){
+  _replyId=id;
+  $('#replySub').textContent=`账面余额 ¥${money(book)}`;
+  const inp=$('#replyInput'); inp.value=book;
+  $('#replyModal').classList.remove('hidden');
+  setTimeout(()=>{inp.focus();inp.select();},30);
+}
+function closeReply(){ $('#replyModal').classList.add('hidden'); _replyId=null; }
+async function submitReply(){
+  if(_replyId==null)return;
+  const amt=Number(String($('#replyInput').value).replace(/,/g,''));
+  if(isNaN(amt)){alert('金额无效');return;}
+  const id=_replyId; closeReply();
+  try{await post(`/api/confirmations/${id}/action`,{action:'reply',reply_amount:amt});loadBoard();}catch(e){alert(e.message);}
+}
+
+/* ---------- 多线任务 ---------- */
+async function loadEngagements(){
+  const list = await get('/api/engagements');
+  const stageIdx={'计划':0,'现场':1,'复核':2,'报告':3};
+  $('#engRows').innerHTML = list.map(e=>{
+    const p=e.conf_total?Math.round(e.conf_replied/e.conf_total*100):0;
+    const stagePills=['计划','现场','复核','报告'].map((s,i)=>
+      `<span class="text-[10px] px-1.5 py-0.5 rounded ${i<=stageIdx[e.stage]?'bg-primary text-white':'bg-muted text-sub'}">${s}</span>`).join(' ');
+    const pill=(hex,txt)=>`<span class="text-xs px-2 py-0.5 rounded-full font-medium" style="background:${hex}1a;color:${hex}">${txt}</span>`;
+    const status = e.overdue ? pill('#DC2626',`逾期 ${Math.abs(e.days_left)}天`)
+      : (e.stage==='报告'?pill('#059669','收尾中'):pill('#2563EB',`剩 ${e.days_left}天`));
+    return `<tr class="hover:bg-muted/60 transition-colors">
+      <td class="px-4 py-3 font-medium text-ink">${e.entity}</td>
+      <td class="px-4 py-3">${chip(AREA[e.audit_area]||'#64748B',e.audit_area)}</td>
+      <td class="px-4 py-3 text-sub">${e.lead}</td>
+      <td class="px-4 py-3"><div class="flex items-center gap-1.5">${stagePills}
+        <button onclick="advance(${e.id})" aria-label="推进阶段" title="推进阶段" class="ml-1 w-5 h-5 rounded border border-line hover:bg-muted transition-colors grid place-items-center text-primary">${svg(I.arrow,'icon text-[11px]')}</button></div></td>
+      <td class="px-4 py-3 text-sub num">${e.due_date}</td>
+      <td class="px-4 py-3">${status}</td>
+      <td class="px-4 py-3"><div class="flex items-center gap-2">
+        <div class="flex-1 bg-muted rounded h-2"><div class="bg-ok h-2 rounded transition-all" style="width:${p}%"></div></div>
+        <span class="text-xs text-sub num">${e.conf_replied}/${e.conf_total}</span>
+        ${e.conf_diff?`<span class="text-[10px] text-warn inline-flex items-center" title="差异待跟进">${svg(I.alert)}${e.conf_diff}</span>`:''}
+      </div></td></tr>`;
+  }).join('');
+}
+async function advance(id){ await post(`/api/engagements/${id}/advance`,{direction:'next'}); loadEngagements(); }
+
+/* ---------- 台账 ---------- */
+async function loadLedger(){
+  const [list,engs] = await Promise.all([get('/api/ledger'),get('/api/engagements')]);
+  $('#impEng').innerHTML = engs.map(e=>`<option value="${e.id}">${e.entity}·${e.audit_area}</option>`).join('');
+  $('#ledRows').innerHTML = list.map(l=>`
+    <tr class="hover:bg-muted/60 transition-colors">
+      <td class="px-4 py-2.5 text-ink">${l.entity}</td>
+      <td class="px-4 py-2.5 text-ink">${l.counterparty}</td>
+      <td class="px-4 py-2.5">${chip(AREA[l.account]||'#64748B',l.account)}</td>
+      <td class="px-4 py-2.5 text-right num text-ink">${money(l.book_amount)}</td>
+      <td class="px-4 py-2.5 text-sub num">${l.entry_date}</td>
+      <td class="px-4 py-2.5 text-right num ${l.age_days>365?'text-danger font-semibold':'text-sub'}">${l.age_days}</td>
+      <td class="px-4 py-2.5 text-center">${l.has_conf
+        ?`<span class="text-xs text-ok inline-flex items-center gap-1">${svg(I.check)}已生成</span>`
+        :`<span class="text-xs text-sub">未生成</span>`}</td>
+    </tr>`).join('');
+}
+async function generateConfs(){
+  const r = await post('/api/ledger/generate');
+  alert(r.created?`已为 ${r.created} 条台账生成待发函函证`:'没有需要生成的台账（均已生成）');
+  loadLedger();
+}
+async function importLedger(){
+  const f=$('#impFile').files[0]; if(!f){alert('请选择 .xlsx 文件');return;}
+  const fd=new FormData(); fd.append('file',f); fd.append('engagement_id',$('#impEng').value);
+  const r=await fetch('/api/ledger/import',{method:'POST',body:fd});
+  const j=await r.json();
+  if(r.ok){alert(`导入成功：${j.imported} 行`);loadLedger();}else{alert(j.detail||'导入失败');}
+}
+
+async function resetDemo(){ if(!confirm('重置为初始演示数据？'))return; await post('/api/reset'); showTab('overview'); }
+document.addEventListener('keydown',e=>{ if(e.key==='Escape')closeReply(); });
+loadOverview();
+</script>
+</body>
+</html>

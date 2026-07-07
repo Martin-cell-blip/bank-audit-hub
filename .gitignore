@@ -1,0 +1,9 @@
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+
+# 内部工作文档（不公开）
+优化指导.md
