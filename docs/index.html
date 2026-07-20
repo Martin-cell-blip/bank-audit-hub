@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="银行函证差异核验与独立复核控制的公开脱敏演示。">
+  <title>银行函证控制台｜公开脱敏演示</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: oklch(0.975 0.006 252);
+      --surface: oklch(1 0 0);
+      --surface-2: oklch(0.95 0.012 252);
+      --ink: oklch(0.22 0.04 258);
+      --muted: oklch(0.45 0.025 258);
+      --line: oklch(0.86 0.018 252);
+      --primary: oklch(0.47 0.18 258);
+      --primary-dark: oklch(0.35 0.15 258);
+      --success: oklch(0.46 0.12 158);
+      --warning: oklch(0.62 0.14 74);
+      --danger: oklch(0.53 0.19 26);
+      --info: oklch(0.55 0.13 222);
+      --radius: 14px;
+      --focus: oklch(0.72 0.14 80);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--canvas);
+      color: var(--ink);
+      font: 15px/1.6 "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+    button, a { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, a:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 3px;
+    }
+    .shell { width: min(1240px, calc(100% - 32px)); margin: 0 auto; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in oklch, var(--surface) 94%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    .topbar-inner {
+      min-height: 68px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: var(--primary);
+      color: white;
+      font-weight: 800;
+    }
+    .brand { flex: 1; min-width: 0; }
+    .brand strong { display: block; font-size: 16px; line-height: 1.25; }
+    .brand span { color: var(--muted); font-size: 12px; }
+    .source-link {
+      color: var(--primary-dark);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    .source-link:hover { text-decoration: underline; text-underline-offset: 4px; }
+
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr);
+      gap: 36px;
+      padding: 64px 0 40px;
+      align-items: end;
+    }
+    .intro h1 {
+      max-width: 760px;
+      margin: 0 0 18px;
+      font-size: clamp(34px, 5vw, 66px);
+      line-height: 1.04;
+      letter-spacing: -.038em;
+      text-wrap: balance;
+    }
+    .intro p {
+      max-width: 68ch;
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+      text-wrap: pretty;
+    }
+    .privacy-note {
+      border-top: 3px solid var(--primary);
+      padding: 18px 0 0;
+      color: var(--muted);
+    }
+    .privacy-note strong { display: block; color: var(--ink); margin-bottom: 4px; }
+
+    .workflow {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 0 0 22px;
+      scrollbar-width: thin;
+    }
+    .step {
+      min-width: 142px;
+      flex: 1;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--muted);
+      transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+    }
+    .step strong { display: block; color: inherit; }
+    .step small { font-size: 11px; }
+    .step.done { border-color: color-mix(in oklch, var(--success) 55%, var(--line)); color: var(--success); }
+    .step.active { border-color: var(--primary); background: color-mix(in oklch, var(--primary) 8%, white); color: var(--primary-dark); }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(250px, .65fr) minmax(520px, 1.6fr);
+      gap: 18px;
+      padding-bottom: 56px;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-head h2 { margin: 0; font-size: 16px; }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .case-list { padding: 10px; }
+    .case {
+      width: 100%;
+      display: block;
+      padding: 14px 12px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: inherit;
+      text-align: left;
+    }
+    .case:last-child { border-bottom: 0; }
+    .case.selected { border-radius: 9px; background: var(--surface-2); }
+    .case-line { display: flex; justify-content: space-between; gap: 10px; }
+    .case span { color: var(--muted); font-size: 12px; }
+    .case b { color: var(--danger); font-variant-numeric: tabular-nums; }
+    .case[disabled] { cursor: default; opacity: .58; }
+
+    .case-main { padding: 22px; }
+    .case-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 18px;
+      margin-bottom: 20px;
+    }
+    .case-title h2 { margin: 0 0 3px; font-size: 23px; }
+    .case-title p { margin: 0; color: var(--muted); }
+    .difference {
+      color: var(--danger);
+      font-size: 24px;
+      font-weight: 750;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 20px;
+    }
+    .fact { padding: 14px 14px 14px 0; }
+    .fact + .fact { padding-left: 14px; border-left: 1px solid var(--line); }
+    .fact span { display: block; color: var(--muted); font-size: 12px; }
+    .fact strong { display: block; margin-top: 2px; font-size: 16px; font-variant-numeric: tabular-nums; }
+    .control-state {
+      min-height: 78px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 16px;
+      border-radius: 10px;
+      background: var(--surface-2);
+    }
+    .control-state strong { display: block; margin-bottom: 2px; }
+    .control-state p { margin: 0; color: var(--muted); font-size: 13px; }
+    .control-state[data-tone="warning"] { background: color-mix(in oklch, var(--warning) 12%, white); }
+    .control-state[data-tone="success"] { background: color-mix(in oklch, var(--success) 10%, white); }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; margin: 20px 0 6px; }
+    .action {
+      min-height: 42px;
+      padding: 9px 14px;
+      border: 1px solid var(--primary);
+      border-radius: 9px;
+      background: var(--primary);
+      color: white;
+      font-weight: 650;
+      transition: background 160ms ease, transform 160ms ease;
+    }
+    .action:hover:not(:disabled) { background: var(--primary-dark); transform: translateY(-1px); }
+    .action.secondary { background: white; color: var(--primary-dark); border-color: var(--line); }
+    .action.secondary:hover:not(:disabled) { background: var(--surface-2); }
+    .action.test { border-color: var(--danger); background: white; color: var(--danger); }
+    .action:disabled { cursor: not-allowed; opacity: .38; }
+
+    .audit { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 18px; }
+    .audit h3 { margin: 0 0 12px; font-size: 14px; }
+    .event {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .event:last-child { border-bottom: 0; }
+    .event time { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .event strong { display: block; }
+    .event span { color: var(--muted); }
+
+    .foot {
+      border-top: 1px solid var(--line);
+      padding: 22px 0 34px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .foot-inner { display: flex; justify-content: space-between; gap: 18px; }
+    .toast {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 40;
+      max-width: min(420px, calc(100vw - 44px));
+      padding: 13px 16px;
+      border-radius: 10px;
+      background: var(--ink);
+      color: white;
+      box-shadow: 0 4px 8px color-mix(in oklch, var(--ink) 20%, transparent);
+      transform: translateY(18px);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform 180ms ease, opacity 180ms ease;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.error { background: var(--danger); }
+
+    @media (max-width: 860px) {
+      .intro, .workspace { grid-template-columns: 1fr; }
+      .intro { padding-top: 42px; }
+      .case-panel { display: none; }
+    }
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 22px, 1240px); }
+      .topbar-inner { min-height: 74px; }
+      .brand span { display: none; }
+      .source-link { font-size: 13px; }
+      .intro h1 { font-size: 36px; }
+      .facts { grid-template-columns: 1fr; }
+      .fact + .fact { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); }
+      .case-title, .control-state, .foot-inner { grid-template-columns: 1fr; flex-direction: column; }
+      .difference { font-size: 20px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="mark" aria-hidden="true">审</div>
+      <div class="brand">
+        <strong>银行函证控制台</strong>
+        <span>状态机 · 证据门槛 · 独立复核 · 审计留痕</span>
+      </div>
+      <a class="source-link" href="https://github.com/Martin-cell-blip/bank-audit-hub/tree/codex/audit-control-upgrade" target="_blank" rel="noreferrer">查看源码与测试 ↗</a>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <h1 id="page-title">让一封函证在证据完整之前，无法被“顺手结项”。</h1>
+        <p>这是银行函证差异核验与复核控制的公开脱敏演示。你可以亲自走完发函、回函、差异归因、证据留存、独立复核和结项流程，也可以故意尝试跳步，观察控制如何生效。</p>
+      </div>
+      <div class="privacy-note">
+        <strong>公开演示，不接触真实数据</strong>
+        所有单位、账户、金额和证据均为模拟内容；页面不会上传文件或连接银行系统。
+      </div>
+    </section>
+
+    <section aria-label="函证状态流程">
+      <div class="workflow" id="workflow"></div>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel case-panel" aria-label="演示案件列表">
+        <div class="panel-head">
+          <h2>演示函证</h2>
+          <span class="tag">3 个脱敏样例</span>
+        </div>
+        <div class="case-list">
+          <button class="case selected" type="button">
+            <div class="case-line"><strong>华北商业银行</strong><b>差异 ¥12,500</b></div>
+            <span>银行存款 · 积极式函证</span>
+          </button>
+          <button class="case" type="button" disabled>
+            <div class="case-line"><strong>滨海城市银行</strong><span>已回函</span></div>
+            <span>短期借款 · 积极式函证</span>
+          </button>
+          <button class="case" type="button" disabled>
+            <div class="case-line"><strong>远航供应链</strong><span>待发函</span></div>
+            <span>应付账款 · 积极式函证</span>
+          </button>
+        </div>
+      </aside>
+
+      <article class="panel">
+        <div class="panel-head">
+          <h2>函证编号 CONF-2026-001</h2>
+          <span class="tag" id="statusTag">待发函</span>
+        </div>
+        <div class="case-main">
+          <div class="case-title">
+            <div>
+              <h2>华北商业银行 · 基本户</h2>
+              <p>星海制造有限公司｜资产负债表日 2025-12-31</p>
+            </div>
+            <div class="difference" id="difference">待回函</div>
+          </div>
+
+          <div class="facts">
+            <div class="fact"><span>账面余额</span><strong>¥3,500,000</strong></div>
+            <div class="fact"><span>回函金额</span><strong id="replyAmount">—</strong></div>
+            <div class="fact"><span>责任分工</span><strong>张伟 / 李娜</strong></div>
+          </div>
+
+          <div class="control-state" id="controlState" data-tone="info" role="status" aria-live="polite">
+            <div>
+              <strong id="controlTitle">等待经办人发函</strong>
+              <p id="controlCopy">系统只允许从“待发函”进入“已发出”，不能直接录入回函或结项。</p>
+            </div>
+            <span class="tag" id="evidenceTag">证据 0 份</span>
+          </div>
+
+          <div class="actions" aria-label="演示操作">
+            <button class="action" id="sendBtn" type="button">1. 发函</button>
+            <button class="action" id="replyBtn" type="button" disabled>2. 录入差异回函</button>
+            <button class="action" id="reasonBtn" type="button" disabled>3. 差异归因</button>
+            <button class="action" id="evidenceBtn" type="button" disabled>4. 添加脱敏证据</button>
+            <button class="action" id="submitBtn" type="button" disabled>5. 提交复核</button>
+            <button class="action" id="approveBtn" type="button" disabled>6. 独立复核并结项</button>
+            <button class="action test" id="bypassBtn" type="button">尝试跳过控制</button>
+            <button class="action secondary" id="resetBtn" type="button">重置演示</button>
+          </div>
+
+          <section class="audit" aria-labelledby="audit-title">
+            <h3 id="audit-title">审计事件时间线</h3>
+            <div id="events"></div>
+          </section>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="shell foot-inner">
+      <span>个人审计数据项目 · 静态脱敏演示</span>
+      <span>资金执行、真实函件发送与银行连接均已禁用</span>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const stages = ['待发函', '已发出', '已回函', '差异待跟进', '待复核', '已结项'];
+    const stageNotes = ['经办准备', '等待银行', '自动勾稽', '补充归因', '独立复核', '控制完成'];
+    const state = {
+      status: '待发函',
+      replied: false,
+      reason: false,
+      evidence: false,
+      submitted: false,
+      closed: false,
+      events: []
+    };
+
+    const $ = selector => document.querySelector(selector);
+    const controls = {
+      workflow: $('#workflow'),
+      statusTag: $('#statusTag'),
+      difference: $('#difference'),
+      replyAmount: $('#replyAmount'),
+      evidenceTag: $('#evidenceTag'),
+      controlState: $('#controlState'),
+      controlTitle: $('#controlTitle'),
+      controlCopy: $('#controlCopy'),
+      events: $('#events'),
+      toast: $('#toast')
+    };
+
+    function currentIndex() {
+      return stages.indexOf(state.status);
+    }
+
+    function addEvent(action, detail, actor = '张伟 · 经办') {
+      const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      state.events.unshift({ now, action, detail, actor });
+    }
+
+    function showToast(message, error = false) {
+      controls.toast.textContent = message;
+      controls.toast.classList.toggle('error', error);
+      controls.toast.classList.add('show');
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => controls.toast.classList.remove('show'), 2600);
+    }
+
+    function describeControl() {
+      if (state.closed) {
+        return ['复核通过，函证已结项', '证据、差异归因、经办结论与复核决定均已留痕。', 'success'];
+      }
+      if (state.submitted) {
+        return ['等待独立复核人李娜', '经办人张伟不能审批自己提交的函证，职责分离控制已启用。', 'warning'];
+      }
+      if (state.evidence && state.reason) {
+        return ['送审条件已经满足', '非零差异已归因，脱敏证据已记录版本、上传人和 SHA-256。', 'success'];
+      }
+      if (state.replied && !state.reason) {
+        return ['发现非零差异，必须先归因', '账面余额比回函金额高 ¥12,500；系统阻止无原因送审。', 'warning'];
+      }
+      if (state.status === '已发出') {
+        return ['等待银行回函', '录入回函后，系统会自动勾稽账面余额并计算差异。', 'info'];
+      }
+      return ['等待经办人发函', '系统只允许从“待发函”进入“已发出”，不能直接录入回函或结项。', 'info'];
+    }
+
+    function render() {
+      const active = currentIndex();
+      controls.workflow.innerHTML = stages.map((stage, index) => `
+        <div class="step ${index < active ? 'done' : ''} ${index === active ? 'active' : ''}">
+          <strong>${stage}</strong><small>${stageNotes[index]}</small>
+        </div>`).join('');
+      controls.statusTag.textContent = state.status;
+      controls.replyAmount.textContent = state.replied ? '¥3,487,500' : '—';
+      controls.difference.textContent = state.replied ? '差异 ¥12,500' : '待回函';
+      controls.evidenceTag.textContent = state.evidence ? '证据 1 份 · v1' : '证据 0 份';
+
+      const [title, copy, tone] = describeControl();
+      controls.controlTitle.textContent = title;
+      controls.controlCopy.textContent = copy;
+      controls.controlState.dataset.tone = tone;
+
+      $('#sendBtn').disabled = state.status !== '待发函';
+      $('#replyBtn').disabled = state.status !== '已发出';
+      $('#reasonBtn').disabled = !state.replied || state.reason;
+      $('#evidenceBtn').disabled = !state.replied || state.evidence;
+      $('#submitBtn').disabled = !state.replied || !state.reason || !state.evidence || state.submitted;
+      $('#approveBtn').disabled = !state.submitted || state.closed;
+
+      controls.events.innerHTML = state.events.length
+        ? state.events.map(event => `
+          <div class="event">
+            <time>${event.now}</time>
+            <div><strong>${event.action}</strong><span>${event.actor}｜${event.detail}</span></div>
+          </div>`).join('')
+        : '<div class="event"><time>现在</time><div><strong>演示已就绪</strong><span>请选择“发函”开始测试。</span></div></div>';
+    }
+
+    $('#sendBtn').addEventListener('click', () => {
+      state.status = '已发出';
+      addEvent('发出询证函', '待发函 → 已发出；记录发函时间和经办人。');
+      showToast('函证已发出，下一步录入银行回函。');
+      render();
+    });
+    $('#replyBtn').addEventListener('click', () => {
+      state.status = '差异待跟进';
+      state.replied = true;
+      addEvent('录入银行回函', '自动勾稽：¥3,500,000 − ¥3,487,500 = ¥12,500。');
+      showToast('检测到非零差异，系统要求补充原因和证据。');
+      render();
+    });
+    $('#reasonBtn').addEventListener('click', () => {
+      state.reason = true;
+      addEvent('差异归因', '归因为“未达账项”，等待银行流水佐证。');
+      showToast('差异原因已留痕。');
+      render();
+    });
+    $('#evidenceBtn').addEventListener('click', () => {
+      state.evidence = true;
+      addEvent('添加脱敏证据', '回函扫描件 v1；记录上传人、时间与 SHA-256。');
+      showToast('已模拟添加一份脱敏证据。');
+      render();
+    });
+    $('#submitBtn').addEventListener('click', () => {
+      state.status = '待复核';
+      state.submitted = true;
+      addEvent('提交复核', '经办结论、差异原因与证据完整，转交李娜复核。');
+      showToast('已提交独立复核，经办人不能自行结项。');
+      render();
+    });
+    $('#approveBtn').addEventListener('click', () => {
+      state.status = '已结项';
+      state.closed = true;
+      addEvent('复核通过并结项', '证据完整、归因合理，同意结项。', '李娜 · 复核');
+      showToast('复核通过：函证已结项。');
+      render();
+    });
+    $('#bypassBtn').addEventListener('click', () => {
+      const reason = state.status === '待发函'
+        ? '必须先发函，不能直接回函或结项。'
+        : state.replied && !state.reason
+          ? '非零差异尚未归因，不能提交复核。'
+          : !state.evidence
+            ? '至少需要一份回函或替代程序证据。'
+            : state.submitted && !state.closed
+              ? '仅指定的独立复核人可以形成复核决定。'
+              : '当前操作不符合状态机允许的迁移路径。';
+      addEvent('拦截非法跳步', reason, '系统控制');
+      showToast(`控制已生效：${reason}`, true);
+      render();
+    });
+    $('#resetBtn').addEventListener('click', () => {
+      Object.assign(state, {
+        status: '待发函',
+        replied: false,
+        reason: false,
+        evidence: false,
+        submitted: false,
+        closed: false,
+        events: []
+      });
+      showToast('演示数据已重置。');
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
