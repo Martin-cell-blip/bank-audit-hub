@@ -87,8 +87,8 @@
 
   <!-- ============ 函证看板 ============ -->
   <section id="tab-kanban" class="hidden">
-    <p class="text-xs text-sub mb-3">拖动卡片切换状态，或用卡片按钮走「发函 → 录入回函 → 核销」正规流程；回函金额自动与账面比对生成差异。</p>
-    <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3" id="board"></div>
+    <p class="text-xs text-sub mb-3">统一状态机控制「发函 → 回函 → 证据上传 → 提交复核 → 结项」；非零差异必须归因，经办人与复核人职责分离。</p>
+    <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3" id="board"></div>
   </section>
 
   <!-- ============ 多线任务 ============ -->
@@ -171,10 +171,11 @@ async function get(u){const r=await fetch(u);return r.json();}
 async function post(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):null});
   if(!r.ok){const e=await r.json().catch(()=>({detail:'出错'}));throw new Error(e.detail||'出错');}return r.json();}
 
-const STATUS = ['待发函','已发出','已回函','差异待跟进','已核销'];
+const STATUS = ['待发函','已发出','已回函','差异待跟进','待复核','已结项'];
 // 语义状态色（green/amber/red + blue，符合 data-dense dashboard 规范；均配文字，不靠颜色单独表意）
 const SC = {
-  '待发函':'#64748B', '已发出':'#2563EB', '已回函':'#059669', '差异待跟进':'#D97706', '已核销':'#1E40AF'
+  '待发函':'#64748B', '已发出':'#2563EB', '已回函':'#059669', '差异待跟进':'#D97706',
+  '待复核':'#7C3AED', '已结项':'#1E40AF'
 };
 const AREA = {'银行存款':'#1E40AF','应收账款':'#059669','应付账款':'#D97706','短期借款':'#7C3AED','其他应收款':'#0891B2'};
 const chip = (hex,text)=>`<span class="text-[10px] px-1.5 py-0.5 rounded font-medium" style="background:${hex}1a;color:${hex}">${text}</span>`;
@@ -208,8 +209,8 @@ function showTab(t){
 async function loadOverview(){
   const d = await get('/api/overview');
   $('#periodLabel').textContent = `${d.fy} 年度财务报表审计 · 资产负债表日 ${d.as_of} · 今天 ${d.today}`;
-  const kpi=(label,val,sub,accent)=>`<div class="bg-surface rounded-xl border border-line p-4 hover:shadow-md transition-shadow border-l-4" style="border-left-color:${accent||'#1E40AF'}">
-    <div class="text-xs text-sub">${label}</div>
+  const kpi=(label,val,sub,accent)=>`<div class="bg-surface rounded-xl border border-line p-4 hover:shadow-md transition-shadow">
+    <div class="text-xs text-sub flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" style="background:${accent||'#1E40AF'}"></span>${label}</div>
     <div class="text-2xl font-bold text-ink mt-1 num">${val}</div>
     <div class="text-xs text-sub mt-0.5">${sub||''}</div></div>`;
   $('#kpis').innerHTML =
@@ -257,6 +258,7 @@ async function loadOverview(){
   $('#events').innerHTML = ev.map(e=>`<div class="flex gap-2 border-b border-line/60 pb-1.5">
     <span class="text-primary font-medium shrink-0">${e.action}</span>
     <span class="truncate text-ink/80">${e.detail||''}</span>
+    <span class="text-sub/70 shrink-0">${e.actor_name||'系统'}</span>
     <span class="ml-auto text-sub/70 shrink-0 num">${(e.ts||'').slice(5,16).replace('T',' ')}</span></div>`).join('') || emptyState('暂无留痕');
 }
 const emptyState = msg => `<div class="text-center py-6 text-sub text-xs">${svg(I.file,'icon text-2xl block mx-auto mb-1 opacity-40')}${msg}</div>`;
@@ -300,6 +302,7 @@ function cardHTML(c){
     </div>
     <div class="text-sm font-medium text-ink leading-snug">${c.counterparty}</div>
     <div class="text-[11px] text-sub mb-1.5">${c.entity} · ${c.method}</div>
+    <div class="text-[10px] text-sub mb-1">经办：${c.preparer_name} · 复核：${c.reviewer_name} · 证据 ${c.evidence_count}</div>
     <div class="text-xs text-ink/80">账面 <b class="num">¥${money(c.book_amount)}</b></div>
     ${c.reply_amount!=null?`<div class="text-xs mt-0.5 text-ink/80">回函 <span class="num">¥${money(c.reply_amount)}</span> · 差异 <b class="num ${diff?'text-danger':'text-ok'}">¥${money(c.difference)}</b>${diff?' '+svg(I.alert,'icon text-danger'):''}</div>`:''}
     ${followup}${reasonUI}
@@ -314,18 +317,41 @@ function btns(c){
   const b=(t,ic,fn,hex)=>`<button onclick="${fn}" class="text-[11px] px-1.5 py-0.5 rounded font-medium transition-colors inline-flex items-center gap-1" style="background:${hex}1a;color:${hex}">${svg(ic)}${t}</button>`;
   if(c.status==='待发函') return b('发函',I.send,`act(${c.id},'send')`,'#2563EB');
   if(c.status==='已发出') return b('录入回函',I.pen,`openReply(${c.id},${c.book_amount})`,'#059669')+(c.needs_followup?b('催函',I.clock,`act(${c.id},'urge')`,'#D97706'):'');
-  if(c.status==='已回函'||c.status==='差异待跟进') return b('核销',I.check,`act(${c.id},'writeoff')`,'#1E40AF')+b('重置',I.undo,`act(${c.id},'reset')`,'#64748B');
-  return b('重置',I.undo,`act(${c.id},'reset')`,'#64748B');
+  if(c.status==='已回函'||c.status==='差异待跟进') return b('证据',I.file,`uploadEvidence(${c.id})`,'#0891B2')+b('提交复核',I.check,`submitReview(${c.id})`,'#7C3AED')+b('重置',I.undo,`act(${c.id},'reset')`,'#64748B');
+  if(c.status==='待复核') return b('复核',I.check,`reviewCase(${c.id})`,'#1E40AF');
+  return b('重开',I.undo,`act(${c.id},'reset',3)`,'#64748B');
 }
 async function onDrop(e,status){
   e.preventDefault(); e.currentTarget.classList.remove('drag-over');
   const id=e.dataTransfer.getData('id'); if(!id)return;
-  try{ await post(`/api/confirmations/${id}/status`,{status}); }
+  try{ await post(`/api/confirmations/${id}/status`,{status,actor_id:1}); }
   catch(err){ alert(err.message); }   // 非法迁移被状态机拒绝 → 提示并复位
   loadBoard();
 }
-async function setReason(id,reason){ if(!reason)return; try{await post(`/api/confirmations/${id}/reason`,{reason});loadBoard();}catch(e){alert(e.message);} }
-async function act(id,action){ try{await post(`/api/confirmations/${id}/action`,{action});loadBoard();}catch(e){alert(e.message);} }
+async function setReason(id,reason){ if(!reason)return; try{await post(`/api/confirmations/${id}/reason`,{reason,actor_id:1});loadBoard();}catch(e){alert(e.message);} }
+async function act(id,action,actorId=1){ try{await post(`/api/confirmations/${id}/action`,{action,actor_id:actorId});loadBoard();}catch(e){alert(e.message);} }
+
+function uploadEvidence(id){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='.pdf,.png,.jpg,.jpeg,.doc,.docx,.xlsx,.txt';
+  inp.onchange=async()=>{
+    if(!inp.files[0])return;
+    const fd=new FormData(); fd.append('file',inp.files[0]); fd.append('evidence_type','回函扫描件'); fd.append('actor_id','1');
+    const r=await fetch(`/api/confirmations/${id}/evidence`,{method:'POST',body:fd});
+    const j=await r.json(); if(!r.ok){alert(j.detail||'上传失败');return;} loadBoard();
+  };
+  inp.click();
+}
+async function submitReview(id){
+  const conclusion=prompt('填写经办处理结论（至少8个字符）：','已核对回函金额、差异原因及佐证材料，提交复核。');
+  if(!conclusion)return;
+  try{await post(`/api/confirmations/${id}/action`,{action:'submit_review',actor_id:1,conclusion});loadBoard();}catch(e){alert(e.message);}
+}
+async function reviewCase(id){
+  const approved=confirm('选择“确定”表示复核通过并结项；选择“取消”表示退回修改。');
+  const conclusion=prompt('填写复核结论（至少8个字符）：',approved?'证据完整、归因合理，同意结项。':'证据或归因不足，退回经办人补充。');
+  if(!conclusion)return;
+  try{await post(`/api/confirmations/${id}/action`,{action:'review',actor_id:2,decision:approved?'APPROVED':'REJECTED',conclusion});loadBoard();}catch(e){alert(e.message);}
+}
 
 /* 录入回函 Modal */
 let _replyId=null;
@@ -342,7 +368,7 @@ async function submitReply(){
   const amt=Number(String($('#replyInput').value).replace(/,/g,''));
   if(isNaN(amt)){alert('金额无效');return;}
   const id=_replyId; closeReply();
-  try{await post(`/api/confirmations/${id}/action`,{action:'reply',reply_amount:amt});loadBoard();}catch(e){alert(e.message);}
+  try{await post(`/api/confirmations/${id}/action`,{action:'reply',actor_id:1,reply_amount:amt});loadBoard();}catch(e){alert(e.message);}
 }
 
 /* ---------- 多线任务 ---------- */

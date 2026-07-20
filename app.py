@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal
 from urllib.parse import quote
@@ -16,14 +17,18 @@ from pydantic import BaseModel
 
 import db
 import letter
-
-app = FastAPI(title="银行审计函证与多线任务协同平台")
-HERE = os.path.dirname(__file__)
+import workflow
 
 
-@app.on_event("startup")
-def _startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     db.ensure_seeded()
+    yield
+    db.close()
+
+
+app = FastAPI(title="银行审计函证与多线任务协同平台", lifespan=lifespan)
+HERE = os.path.dirname(__file__)
 
 
 # --------------------------------------------------------------------------- #
@@ -36,12 +41,12 @@ def overview():
     for s in db.STATUSES:
         counts.setdefault(s, 0)
     total = sum(counts.values())
-    replied = counts["已回函"] + counts["差异待跟进"] + counts["已核销"]
+    replied = counts["已回函"] + counts["差异待跟进"] + counts["待复核"] + counts["已结项"]
 
     agg = db.query("""
         SELECT
-          COUNT(*) FILTER (WHERE difference IS NOT NULL AND difference <> 0) AS diff_cnt,
-          COALESCE(SUM(ABS(difference)) FILTER (WHERE difference IS NOT NULL AND difference <> 0),0) AS diff_amt,
+          SUM(CASE WHEN difference IS NOT NULL AND difference <> 0 THEN 1 ELSE 0 END) AS diff_cnt,
+          COALESCE(SUM(CASE WHEN difference IS NOT NULL AND difference <> 0 THEN ABS(difference) ELSE 0 END),0) AS diff_amt,
           COALESCE(SUM(book_amount),0) AS book_total
         FROM confirmations""")[0]
 
@@ -54,10 +59,10 @@ def overview():
     aging = db.query(f"""
         WITH b AS (
           SELECT CASE
-            WHEN date_diff('day', entry_date, as_of) <= 30 THEN '0-30天'
-            WHEN date_diff('day', entry_date, as_of) <= 90 THEN '31-90天'
-            WHEN date_diff('day', entry_date, as_of) <= 180 THEN '91-180天'
-            WHEN date_diff('day', entry_date, as_of) <= 365 THEN '181-365天'
+            WHEN CAST(julianday(as_of)-julianday(entry_date) AS INTEGER) <= 30 THEN '0-30天'
+            WHEN CAST(julianday(as_of)-julianday(entry_date) AS INTEGER) <= 90 THEN '31-90天'
+            WHEN CAST(julianday(as_of)-julianday(entry_date) AS INTEGER) <= 180 THEN '91-180天'
+            WHEN CAST(julianday(as_of)-julianday(entry_date) AS INTEGER) <= 365 THEN '181-365天'
             ELSE '1年以上' END AS bucket,
           book_amount
           FROM ledger WHERE account IN {recv})
@@ -69,8 +74,9 @@ def overview():
     coverage = db.query("""
         SELECT l.account,
           SUM(l.book_amount) AS total_amt,
-          COALESCE(SUM(l.book_amount) FILTER (
-            WHERE EXISTS(SELECT 1 FROM confirmations c WHERE c.ledger_id = l.id)), 0) AS confirmed_amt
+          COALESCE(SUM(CASE WHEN EXISTS(
+            SELECT 1 FROM confirmations c WHERE c.ledger_id = l.id
+          ) THEN l.book_amount ELSE 0 END), 0) AS confirmed_amt
         FROM ledger l GROUP BY l.account""")
     for cov in coverage:
         cov["rate"] = round(cov["confirmed_amt"] / cov["total_amt"] * 100, 2) if cov["total_amt"] else 0
@@ -81,7 +87,7 @@ def overview():
     entity_progress = db.query("""
         SELECT e.entity,
                COUNT(c.id) AS total,
-               COUNT(c.id) FILTER (WHERE c.status IN ('已回函','差异待跟进','已核销')) AS replied
+               SUM(CASE WHEN c.status IN ('已回函','差异待跟进','待复核','已结项') THEN 1 ELSE 0 END) AS replied
         FROM engagements e LEFT JOIN confirmations c ON c.engagement_id = e.id
         GROUP BY e.entity ORDER BY e.entity""")
 
@@ -113,8 +119,14 @@ URGE_DAYS = 30   # 发函后超过 N 天未回 → 应催函 / 转替代程序
 def list_confirmations():
     rows = db.query("""
         SELECT c.*, e.entity, e.audit_area,
-          CASE WHEN c.sent_date IS NOT NULL THEN date_diff('day', c.sent_date, CURRENT_DATE) END AS days_since_sent
+          p.name AS preparer_name, r.name AS reviewer_name,
+          (SELECT COUNT(*) FROM evidence_files ef WHERE ef.confirmation_id=c.id) AS evidence_count,
+          (SELECT COUNT(*) FROM review_decisions rd WHERE rd.confirmation_id=c.id) AS review_count,
+          CASE WHEN c.sent_date IS NOT NULL
+               THEN CAST(julianday(CURRENT_DATE)-julianday(c.sent_date) AS INTEGER) END AS days_since_sent
         FROM confirmations c JOIN engagements e ON e.id = c.engagement_id
+        JOIN users p ON p.id=c.preparer_id
+        JOIN users r ON r.id=c.reviewer_id
         ORDER BY c.confirm_no""")
     for r in rows:
         d = r.get("days_since_sent")
@@ -126,100 +138,115 @@ def list_confirmations():
 
 class StatusIn(BaseModel):
     status: str
+    actor_id: int = 1
 
 
 class ActionIn(BaseModel):
     action: str
+    actor_id: int = 1
     reply_amount: float | None = None
+    conclusion: str | None = None
+    decision: str | None = None
+    notes: str | None = None
 
 
 class ReasonIn(BaseModel):
     reason: str
+    actor_id: int = 1
 
 
 def _get_conf(cid: int) -> dict:
-    r = db.query("SELECT * FROM confirmations WHERE id = ?", [cid])
-    if not r:
-        raise HTTPException(404, "函证不存在")
-    return r[0]
+    try:
+        return workflow.get_confirmation(cid)
+    except workflow.WorkflowError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @app.post("/api/confirmations/{cid}/status")
 def set_status(cid: int, body: StatusIn):
-    """拖拽换状态：只允许状态机中合法的、无需额外数据的迁移。"""
-    if body.status not in db.STATUSES:
-        raise HTTPException(400, "非法状态")
     conf = _get_conf(cid)
-    cur, st = conf["status"], body.status
-    if st == cur:
+    if body.status == conf["status"]:
         return conf
-    # 1) 合法迁移校验（防止跳过发函/回函直接核销）
-    if st not in db.STATUS_TRANSITIONS.get(cur, set()):
-        raise HTTPException(409, f"不允许从「{cur}」直接拖到「{st}」，请按流程逐步推进")
-    # 2) 进入已回函/差异待跟进必须有回函金额 → 强制走「录入回函」按钮
-    if st in ("已回函", "差异待跟进") and conf["reply_amount"] is None:
-        raise HTTPException(409, "请用「录入回函」按钮登记回函金额，回函差异需据实计算")
-    sets = ["status = ?", "updated_at = now()"]
-    params: list = [st]
-    if st == "已发出":
-        sets.append("sent_date = COALESCE(sent_date, CURRENT_DATE)")
-    if st == "待发函":
-        sets += ["sent_date = NULL", "reply_date = NULL",
-                 "reply_amount = NULL", "difference = NULL", "diff_reason = NULL"]
-    db.execute(f"UPDATE confirmations SET {', '.join(sets)} WHERE id = ?", params + [cid])
-    db.log_event(cid, "状态流转", f"{cur} → {st}")
-    return _get_conf(cid)
+    action = "send" if body.status == "已发出" else "reset" if body.status == "待发函" else None
+    if action is None:
+        raise HTTPException(409, "该状态必须通过回函、提交复核或复核决定按钮推进")
+    try:
+        return workflow.apply_action(cid, action, body.actor_id)
+    except workflow.WorkflowError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @app.post("/api/confirmations/{cid}/action")
 def act(cid: int, body: ActionIn):
-    conf = _get_conf(cid)
-    a = body.action
-    if a == "send":
-        db.execute("UPDATE confirmations SET status='已发出', "
-                   "sent_date=COALESCE(sent_date,CURRENT_DATE), updated_at=now() WHERE id=?", [cid])
-        db.log_event(cid, "发函", conf["confirm_no"])
-    elif a == "reply":
-        if body.reply_amount is None:
-            raise HTTPException(400, "请填写回函金额")
-        reply = Decimal(str(body.reply_amount))
-        diff = Decimal(str(conf["book_amount"])) - reply
-        status = "已回函" if diff == 0 else "差异待跟进"
-        # 相符则清空差异归因
-        db.execute("UPDATE confirmations SET reply_amount=?, difference=?, status=?, "
-                   "reply_date=COALESCE(reply_date,CURRENT_DATE), "
-                   "sent_date=COALESCE(sent_date,CURRENT_DATE), "
-                   "diff_reason=CASE WHEN ?=0 THEN NULL ELSE diff_reason END, updated_at=now() WHERE id=?",
-                   [reply, diff, status, diff, cid])
-        db.log_event(cid, "录入回函", f"回函 {reply}，差异 {diff}")
-    elif a == "urge":
-        db.log_event(cid, "催函", f"{conf['confirm_no']} 二次催函"
-                     + ("（银行存款不可替代程序）" if conf["account"] in db.BANK_ACCOUNTS else "，逾期未回将转替代程序"))
-    elif a == "writeoff":
-        if conf["status"] not in ("已回函", "差异待跟进"):
-            raise HTTPException(409, "仅已回函/差异待跟进的函证可核销")
-        db.execute("UPDATE confirmations SET status='已核销', updated_at=now() WHERE id=?", [cid])
-        db.log_event(cid, "核销", conf["confirm_no"])
-    elif a == "reset":
-        db.execute("UPDATE confirmations SET status='待发函', sent_date=NULL, reply_date=NULL, "
-                   "reply_amount=NULL, difference=NULL, diff_reason=NULL, updated_at=now() WHERE id=?", [cid])
-        db.log_event(cid, "重置", conf["confirm_no"])
-    else:
-        raise HTTPException(400, "未知操作")
-    return _get_conf(cid)
+    try:
+        return workflow.apply_action(
+            cid,
+            body.action,
+            body.actor_id,
+            reply_amount=body.reply_amount,
+            conclusion=body.conclusion,
+            decision=body.decision,
+            notes=body.notes,
+        )
+    except workflow.WorkflowError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @app.post("/api/confirmations/{cid}/reason")
 def set_reason(cid: int, body: ReasonIn):
-    """差异归因（三分法）：未达账项 / 记账错误 / 舞弊迹象 / 待核实。"""
-    if body.reason not in db.DIFF_REASONS:
-        raise HTTPException(400, "非法归因")
-    conf = _get_conf(cid)
-    if conf["difference"] in (None, 0):
-        raise HTTPException(409, "仅有差异的函证需要归因")
-    db.execute("UPDATE confirmations SET diff_reason=?, updated_at=now() WHERE id=?", [body.reason, cid])
-    db.log_event(cid, "差异归因", f"{conf['confirm_no']} → {body.reason}")
-    return _get_conf(cid)
+    try:
+        return workflow.set_reason(cid, body.actor_id, body.reason)
+    except workflow.WorkflowError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@app.get("/api/users")
+def users():
+    return db.query("SELECT id, name, role FROM users ORDER BY id")
+
+
+@app.get("/api/confirmations/{cid}/evidence")
+def list_evidence(cid: int):
+    _get_conf(cid)
+    return db.query(
+        """SELECT e.id, e.evidence_type, e.original_name, e.sha256, e.uploaded_at,
+                  e.version, u.name AS uploader_name
+           FROM evidence_files e JOIN users u ON u.id=e.uploaded_by
+           WHERE e.confirmation_id=? ORDER BY e.id""",
+        [cid],
+    )
+
+
+@app.post("/api/confirmations/{cid}/evidence")
+async def upload_evidence(
+    cid: int,
+    file: UploadFile = File(...),
+    evidence_type: str = Form("回函扫描件"),
+    actor_id: int = Form(1),
+):
+    try:
+        return workflow.add_evidence(
+            cid,
+            actor_id,
+            evidence_type,
+            file.filename or "evidence.bin",
+            await file.read(),
+        )
+    except workflow.WorkflowError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@app.get("/api/evidence/{evidence_id}/download")
+def download_evidence(evidence_id: int):
+    rows = db.query("SELECT * FROM evidence_files WHERE id=?", [evidence_id])
+    if not rows:
+        raise HTTPException(404, "证据不存在")
+    evidence = rows[0]
+    path = os.path.abspath(evidence["stored_path"])
+    evidence_root = os.path.abspath(db.EVIDENCE_DIR)
+    if os.path.commonpath([path, evidence_root]) != evidence_root or not os.path.isfile(path):
+        raise HTTPException(404, "证据文件不可用")
+    return FileResponse(path, filename=evidence["original_name"])
 
 
 @app.get("/api/confirmations/{cid}/letter")
@@ -253,7 +280,7 @@ def get_letter(cid: int, fmt: str = "html"):
 def list_ledger():
     return db.query("""
         SELECT l.*, e.entity,
-          date_diff('day', l.entry_date, l.as_of) AS age_days,
+          CAST(julianday(l.as_of)-julianday(l.entry_date) AS INTEGER) AS age_days,
           EXISTS(SELECT 1 FROM confirmations c WHERE c.ledger_id = l.id) AS has_conf
         FROM ledger l JOIN engagements e ON e.id = l.engagement_id
         ORDER BY l.id""")
@@ -280,11 +307,19 @@ def generate():
         cid = db.next_id("confirmations")
         no = _new_confirm_no(r["account"])
         method = db.pick_method(r["account"], r["book_amount"])
-        db.execute("INSERT INTO confirmations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                   [cid, r["id"], r["engagement_id"], no, r["counterparty"], r["bank_name"],
-                    r["account"], method, Decimal(str(r["book_amount"])), None, None,
-                    "待发函", None, None, None, None])
-        db.log_event(cid, "生成函证", f"{no} · {r['counterparty']}")
+        db.execute(
+            """INSERT INTO confirmations
+               (id,ledger_id,engagement_id,confirm_no,counterparty,bank_name,account,method,
+                book_amount,reply_amount,difference,status,sent_date,reply_date,updated_at,
+                diff_reason,preparer_id,reviewer_id,preparer_conclusion)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                cid, r["id"], r["engagement_id"], no, r["counterparty"], r["bank_name"],
+                r["account"], method, float(r["book_amount"]), None, None, "待发函",
+                None, None, date.today().isoformat(), None, 1, 2, None,
+            ],
+        )
+        db.log_event(cid, 1, "生成函证", f"{no} · {r['counterparty']}", None, "待发函")
         created.append(no)
     return {"created": len(created), "nos": created}
 
@@ -333,9 +368,10 @@ async def import_ledger(file: UploadFile = File(...), engagement_id: int = Form(
         bank = cp if account in letter.BANK_ACCOUNTS else ""
         lid = db.next_id("ledger")
         db.execute("INSERT INTO ledger VALUES (?,?,?,?,?,?,?,?,?)",
-                   [lid, engagement_id, cp, bank, account, amt, "CNY", entry_dt, db.REPORT_DATE])
+                   [lid, engagement_id, cp, bank, account, float(amt), "CNY",
+                    entry_dt.isoformat(), db.REPORT_DATE.isoformat()])
         n += 1
-    db.log_event(None, "导入台账", f"{file.filename}：{n} 行 → 项目#{engagement_id}")
+    db.log_event(None, 1, "导入台账", f"{file.filename}：{n} 行 → 项目#{engagement_id}")
     return {"imported": n}
 
 
@@ -346,13 +382,14 @@ async def import_ledger(file: UploadFile = File(...), engagement_id: int = Form(
 def list_engagements():
     return db.query("""
         SELECT e.*,
-          date_diff('day', CURRENT_DATE, e.due_date) AS days_left,
+          CAST(julianday(e.due_date)-julianday(CURRENT_DATE) AS INTEGER) AS days_left,
           (e.due_date < CURRENT_DATE AND e.stage <> '报告') AS overdue,
           COUNT(c.id) AS conf_total,
-          COUNT(c.id) FILTER (WHERE c.status IN ('已回函','差异待跟进','已核销')) AS conf_replied,
-          COUNT(c.id) FILTER (WHERE c.status = '差异待跟进') AS conf_diff
+          SUM(CASE WHEN c.status IN ('已回函','差异待跟进','待复核','已结项') THEN 1 ELSE 0 END) AS conf_replied,
+          SUM(CASE WHEN c.status = '差异待跟进' THEN 1 ELSE 0 END) AS conf_diff
         FROM engagements e LEFT JOIN confirmations c ON c.engagement_id = e.id
-        GROUP BY ALL ORDER BY e.id""")
+        GROUP BY e.id, e.entity, e.audit_area, e.period, e.lead, e.stage, e.start_date, e.due_date
+        ORDER BY e.id""")
 
 
 class AdvanceIn(BaseModel):
@@ -376,7 +413,11 @@ def advance(eid: int, body: AdvanceIn):
 # --------------------------------------------------------------------------- #
 @app.get("/api/events")
 def events(limit: int = 12):
-    return db.query("SELECT * FROM events ORDER BY id DESC LIMIT ?", [limit])
+    return db.query(
+        """SELECT e.*, u.name AS actor_name FROM events e
+           LEFT JOIN users u ON u.id=e.actor_id ORDER BY e.id DESC LIMIT ?""",
+        [limit],
+    )
 
 
 @app.post("/api/reset")
